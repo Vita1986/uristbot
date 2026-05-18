@@ -1,6 +1,11 @@
+import os
+from dotenv import load_dotenv
+
+# Загружаем переменные из файла .env
+load_dotenv()
+
 import asyncio
 import logging
-import os
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import CommandStart
@@ -23,6 +28,9 @@ DEEPSEEK_API_KEY = "sk-6ca9bdce04844216a832a7865700d526"
 # os.environ["https_proxy"] = "http://127.0.0.1:7890"
 
 # Создаем сессию для бота, которая автоматически подхватывает системный прокси/VPN
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+
 bot_session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=bot_session)
 dp = Dispatcher(storage=MemoryStorage())
