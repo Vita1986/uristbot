@@ -12,72 +12,100 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from openai import AsyncOpenAI
 
-# Включаем логирование, чтобы видеть подробные отчеты в консоли
+# Включаем логирование
 logging.basicConfig(level=logging.INFO)
-
-# Загружаем переменные из файла .env
 load_dotenv()
 
-# ==========================================================
-# 🔑 МЕСТО ДЛЯ ВАШИХ API КЛЮЧЕЙ (ЗАПОЛНИТЕ ИХ ПЕРЕД ЗАПУСКОМ)
-# ==========================================================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-
-# Если ключи не заданы в .env, то подставляем дефолтные жестко в код
-if not BOT_TOKEN:
-    BOT_TOKEN = "8804861202:AAGbDign9c52_jpGfDe6YzfRgT7UwL1jA7o"
-if not DEEPSEEK_API_KEY:
-    DEEPSEEK_API_KEY = "sk-6ca9bdce04844216a832a7865700d526"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8804861202:AAGbDign9c52_jpGfDe6YzfRgT7UwL1jA7o")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-6ca9bdce04844216a832a7865700d526")
 
 bot_session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=bot_session)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Инициализируем DeepSeek строго по официальному API-адресу v1
+# Инициализируем DeepSeek v1
 ai_client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://deepseek.com")
 
 # ==========================================================
-# 📑 БАЗЫ ЗНАНИЙ ИИ-АГЕНТОВ (SYSTEM PROMPTS)
+# 📑 ЭТАЛОННЫЕ ШАБЛОНЫ ДЛЯ DEEPSEEK (SYSTEM PROMPTS)
 # ==========================================================
 SYSTEM_PROMPTS = {
-    "marketplaces": (
-        "Ты — юрист по электронной коммерции в РФ. Твоя задача — составить досудебную претензию. "
-        "База знаний: ст. 26.1 ЗоЗПП (Дистанционная торговля), ст. 18-22 ЗоЗПП (Брак), ст. 23 ЗоЗПП (Неустойка 1% в день). "
-        "ПРАВИЛО: Перечень ТСТ №924 НЕ применяется для исправного товара в первые 7 дней дистанционной покупки (ст. 26.1). "
-        "Покупатель вправе вернуть даже исправный смартфон. Требуй неустойку 1% в день, если нарушен срок возврата денег (10 дней). "
-        "Не собирай паспортные данные, пиши заглушки: [Паспорт: серия ___ № ___]. Тон жесткий, официальный."
+    "brak": (
+        "Ты — профессиональный ИИ-юрист. Твоя единственная задача — строго по предоставленным фактам пользователя "
+        "заполнить шаблон претензии о возврате денег за БРАКОВАННЫЙ товар. Текст за пределами шаблона писать запрещено.\n\n"
+        "ОБЯЗАТЕЛЬНЫЙ ШАБЛОН ДЛЯ ЗАПОЛНЕНИЯ:\n"
+        "Кому: [Вставь Название Продавца]\n"
+        "Адрес: [Вставь Адрес Продавца]\n"
+        "От кого (ФИО): [Вставь ФИО заявителя]\n"
+        "Адрес для ответа: [Вставь Адрес заявителя]\n\n"
+        "ПРЕТЕНЗИЯ\n"
+        "Я приобрел(а) в вашем магазине товар: [Вставь Наименование Товара], стоимостью [Вставь Стоимость] рублей. "
+        "В процессе эксплуатации в товаре обнаружились следующие недостатки: [Юридически грамотно опиши суть проблемы на основе слов пользователя].\n"
+        "В соответствии со ст. 18 Закона РФ «О защите прав потребителей», потребитель в случае обнаружения в товаре недостатков "
+        "вправе отказаться от исполнения договора купли-продажи и потребовать возврата уплаченной за товар суммы.\n"
+        "Согласно ст. 22 Закона РФ «О защите прав потребителей», требования подлежат удовлетворению в течение 10 дней.\n"
+        "На основании изложенного, руководствуясь ст. 15, 18, 22 Закона РФ «О защите прав потребителей»,\n"
+        "ТРЕБУЮ:\n"
+        "1. Расторгнуть договор купли-продажи.\n"
+        "2. Вернуть мне уплаченную сумму в размере [Вставь Стоимость] рублей в течение 10 дней по реквизитам: [Вставь Реквизиты].\n\n"
+        "Дата: [Вставь Текущую Дату или оставь ___] Подпись: _________ / [Вставь ФИО Инициалы]"
     ),
-    "jkh": (
-        "Ты — суровый инспектор по ЖКХ и жилищному праву РФ. Твоя цель — составить претензию к Управляющей Компании (УК). "
-        "База знаний: ЖК РФ, Постановление Правительства № 354, Постановление Госстроя № 170. "
-        "ПРАВИЛО: Забудь про ЗоЗПП на первом этапе. Если жалоба на отопление — норма не ниже +18°C (угловые +20°C). "
-        "Если есть перерасчет по калькулятору, включи требование снизить плату на 0,15% за каждый час нарушения. "
-        "При заливе/лифте ссылайся на Постановление Госстроя № 170. Не собирай паспортные данные, пиши заглушки."
+
+    "kačestvo": (
+        "Ты — профессиональный ИИ-юрист. Твоя задача — заполнить шаблон заявления на возврат товара НАДЛЕЖАЩЕГО качества "
+        "(который просто не подошел). Действуй строго по закону, не выдумывай лишнего.\n\n"
+        "ОБЯЗАТЕЛЬНЫЙ ШАБЛОН ДЛЯ ЗАПОЛНЕНИЯ:\n"
+        "Кому: [Вставь Название Продавца]\n"
+        "Адрес: [Вставь Адрес Продавца]\n"
+        "От кого (ФИО): [Вставь ФИО заявителя]\n"
+        "Адрес для ответа: [Вставь Адрес заявителя]\n\n"
+        "ЗАЯВЛЕНИЕ\n"
+        "Я приобрел(а) в вашем магазине товар: [Вставь Наименование Товара], стоимостью [Вставь Стоимость] рублей. "
+        "Указанный товар не подошел мне по причине: [Вставь причину: размер/фасон/цвет].\n"
+        "В соответствии со ст. 25 Закона РФ «О защите прав потребителей», потребитель вправе обменять непродовольственный товар "
+        "в течение 14 дней. Поскольку аналогичный товар, подходящий мне, в продаже на день обращения отсутствует, на основании "
+        "п. 2 ст. 25 Закона я отказываюсь от договора и требую возврата денег. Товар не был в употреблении, сохранены ярлыки и товарный вид.\n"
+        "ТРЕБУЮ:\n"
+        "1. Принять назад товар надлежащего качества.\n"
+        "2. Вернуть мне денежные средства в размере [Вставь Стоимость] рублей в течение 3 дней по реквизитам: [Вставь Реквизиты].\n\n"
+        "Дата: [Вставь Текущую Дату] Подпись: _________ / [Вставь ФИО Инициалы]"
     ),
-    "consumer_rights": (
-        "Ты — адвокат по общей защите прав потребителей РФ (офлайн-магазины, автосалоны, фитнес, онлайн-курсы). "
-        "База знаний: ст. 18, 25, 32 ЗоЗПП, ст. 782 ГК РФ, Постановление Правительства № 2463. "
-        "ПРАВИЛО: Для онлайн-курсов ссылайся на ст. 32 ЗоЗПП. Условия оферт 'деньги не возвращаются' ничтожны по ст. 16 ЗоЗПП. "
-        "Исполнитель обязан доказать Фактически Понесенные Расходы (ФПР) на конкретного студента, иначе это ст. 1102 ГК РФ. "
-        "Для исправного офлайн-товара проверяй перечень №2463 — если он там есть, возврат надлежащего качества невозможен."
+
+    "rospotreb": (
+        "Ты — профессиональный ИИ-юрист. Твоя задача — составить жалобу в Роспотребнадзор на то, что магазин проигнорировал досудебную претензию.\n\n"
+        "ОБЯЗАТЕЛЬНЫЙ ШАБЛОН ДЛЯ ЗАПОЛНЕНИЯ:\n"
+        "Куда: Управление Роспотребнадзора\n"
+        "От кого (ФИО): [Вставь ФИО заявителя]\n"
+        "Адрес для ответа: [Вставь Адрес заявителя]\n\n"
+        "ЖАЛОБА\n"
+        "Мной в магазине [Вставь Название Продавца] был приобретен товар [Вставь Наименование Товара]. В связи с возникшими проблемами "
+        "в адрес продавца была направлена письменная досудебная претензия с требованием возврата денежных средств. "
+        "Продавец получил претензию, однако в установленный законом 10-дневный срок требования потребителя не выполнил и ответ не предоставил.\n"
+        "На основании Федерального закона № 59-ФЗ «О порядке рассмотрения обращений граждан РФ»,\n"
+        "ПРОШУ:\n"
+        "1. Провести проверку в отношении организации [Вставь Название Продавца].\n"
+        "2. Выдать предписание об устранении нарушений и привлечь виновных лиц к административной ответственности по ст. 14.15 КоАП РФ.\n\n"
+        "Дата: [Вставь Текущую Дату] Подпись: _________ / [Вставь ФИО Инициалы]"
     )
 }
 
 
 # ==========================================================
-# 🔄 СОСТОЯНИЯ ДЛЯ ПОШАГОВЫХ ОПРОСОВ (FSM)
+# 🔄 ОБНОВЛЕННЫЕ СОСТОЯНИЯ (FSM)
 # ==========================================================
 class BotStates(StatesGroup):
     waiting_for_agreement = State()
     main_menu = State()
+    step_fio = State()
+    step_user_address = State()
     step_company = State()
+    step_company_address = State()
+    step_product = State()
+    step_price = State()
     step_problem = State()
-    step_address = State()
-    step_temp = State()
+    step_rekvizity = State()
 
 
-# Вспомогательная функция для разбивки сообщений (защита от лимита в 4096 символов)
 def split_text(text: str, max_size: int = 4000) -> list[str]:
     parts = []
     while len(text) > max_size:
@@ -91,19 +119,16 @@ def split_text(text: str, max_size: int = 4000) -> list[str]:
 
 
 # ==========================================================
-# 📥 ХЕНДЛЕРЫ И ЛОГИКА ИНТЕРФЕЙСА
+# 📥 ХЕНДЛЕРЫ ИНТЕРФЕЙСА
 # ==========================================================
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
     builder = InlineKeyboardBuilder()
-    builder.button(text="✅ Я согласен с условиями оферты", callback_data="agree_terms")
+    builder.button(text="✅ Я согласен с условиями", callback_data="agree_terms")
     text = (
-        "⚖ **Приветствую! Я — Твой Личный Юрист | ИИ.**\n\n"
-        "Больше не нужно переплачивать юристам за простые бланки или скачивать устаревшие шаблоны. "
-        "Я работаю на базе нейросети DeepSeek, знаю все тонкости законодательства РФ и составлю "
-        "идеальный документ за 2 минуты!\n\n"
-        "Нажимая кнопку ниже, вы соглашаетесь с условиями пользовательского соглашения и оферты. "
-        "Бот является интеллектуальным конструктором and не заменяет очную консультацию адвоката."
+        "⚖ **Приветствую! Я — Ваш ИИ-Юрист.**\n\n"
+        "Я помогу вам составить официальные документы для возврата денег и защиты ваших прав.\n"
+        "Нажмите кнопку ниже для продолжения."
     )
     await message.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
     await state.set_state(BotStates.waiting_for_agreement)
@@ -117,34 +142,47 @@ async def process_agreement(callback: types.CallbackQuery, state: FSMContext):
 
 async def show_main_menu(message: types.Message, state: FSMContext):
     builder = InlineKeyboardBuilder()
-    builder.button(text="🛒 Маркетплейсы (WB, Ozon)", callback_data="agent_marketplaces")
-    builder.button(text="🏢 ЖКХ, Отопление и Дом", callback_data="agent_jkh")
-    builder.button(text="🛍 Возврат денег (Курсы, Магазины)", callback_data="agent_consumer_rights")
+    builder.button(text="❌ Возврат БРАКОВАННОГО товара", callback_data="agent_brak")
+    builder.button(text="🔄 Возврат ИСПРАВНОГО товара (не подошел)", callback_data="agent_kačestvo")
+    builder.button(text="🏛 Жалоба в Роспотребнадзор", callback_data="agent_rospotreb")
     builder.adjust(1)
-    text = (
-        "🤖 **Выберите, какую проблему нам нужно решить прямо сейчас:**\n\n"
-        "🛒 **Маркетплейсы** — Вернем деньги за брак или отказ в возврате.\n"
-        "🏢 **ЖКХ и Дом** — Заставим УК включить отопление, починить крышу или сделать перерасчет.\n"
-        "🛍 **Права потребителя** — Возврат денег за курсы, страховки или технику."
-    )
+    text = "🤖 **Выберите тип документа, который вам необходим:**"
     await message.answer(text, reply_markup=builder.as_markup())
     await state.set_state(BotStates.main_menu)
 
 
 # ==========================================================
-# 🚀 МЕХАНИКА ПЕРЕКЛЮЧЕНИЯ АГЕНТОВ И СБОР ДАННЫХ
+# 🚀 СБОР ДАННЫХ ПОД НОВЫЕ ДОКУМЕНТЫ
 # ==========================================================
 @dp.callback_query(F.data.startswith("agent_"), BotStates.main_menu)
 async def choose_agent(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     agent_name = callback.data.split("_")[1]
     await state.update_data(current_agent=agent_name, user_answers={})
-    themes = {"marketplaces": "онлайн-торговле", "jkh": "жилищному праву",
-              "consumer_rights": "защите прав потребителей"}
-    await callback.message.answer(
-        f"⚡ **Отлично, переключаюсь на базу знаний по {themes[agent_name]}!**\n\n"
-        f"Пожалуйста, напишите название компании, к которой у вас претензия (или ИНН из чека):"
-    )
+
+    await callback.message.answer("Введите ваши **ФИО полностью** (для шапки документа):")
+    await state.set_state(BotStates.step_fio)
+
+
+@dp.message(BotStates.step_fio)
+async def process_fio(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    user_answers = data.get("user_answers", {})
+    user_answers["ФИО заявителя"] = message.text
+    await state.update_data(user_answers=user_answers)
+
+    await message.answer("Введите **ваш адрес** (для направления ответа):")
+    await state.set_state(BotStates.step_user_address)
+
+
+@dp.message(BotStates.step_user_address)
+async def process_user_address(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    user_answers = data.get("user_answers", {})
+    user_answers["Адрес заявителя"] = message.text
+    await state.update_data(user_answers=user_answers)
+
+    await message.answer("Введите **название магазина / компании** (например, ООО 'Вайлдберриз'):")
     await state.set_state(BotStates.step_company)
 
 
@@ -152,10 +190,61 @@ async def choose_agent(callback: types.CallbackQuery, state: FSMContext):
 async def process_company(message: types.Message, state: FSMContext):
     data = await state.get_data()
     user_answers = data.get("user_answers", {})
-    user_answers["Название компании/УК"] = message.text
+    user_answers["Название Продавца"] = message.text
     await state.update_data(user_answers=user_answers)
-    await message.answer("Опишите кратко, что произошло? (Например: товар пришел с браком, или УК не убирает подъезд):")
-    await state.set_state(BotStates.step_problem)
+
+    if data.get("current_agent") == "rospotreb":
+        # Для Роспотребнадзора адрес магазина не обязателен в шапке, переходим к товару
+        user_answers["Адрес Продавца"] = "Не указан"
+        await state.update_data(user_answers=user_answers)
+        await message.answer("Какой **товар** или услугу вы приобрели?")
+        await state.set_state(BotStates.step_product)
+    else:
+        await message.answer("Введите **юридический или фактический адрес магазина**:")
+        await state.set_state(BotStates.step_company_address)
+
+
+@dp.message(BotStates.step_company_address)
+async def process_company_address(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    user_answers = data.get("user_answers", {})
+    user_answers["Адрес Продавца"] = message.text
+    await state.update_data(user_answers=user_answers)
+
+    await message.answer("Укажите **наименование товара** (например: Смартфон Apple iPhone 15):")
+    await state.set_state(BotStates.step_product)
+
+
+@dp.message(BotStates.step_product)
+async def process_product(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    user_answers = data.get("user_answers", {})
+    user_answers["Наименование Товара"] = message.text
+    await state.update_data(user_answers=user_answers)
+
+    await message.answer("Укажите **стоимость товара** в рублях (только цифры):")
+    await state.set_state(BotStates.step_price)
+
+
+@dp.message(BotStates.step_price)
+async def process_price(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    user_answers = data.get("user_answers", {})
+    user_answers["Стоимость"] = message.text
+    await state.update_data(user_answers=user_answers)
+
+    if data.get("current_agent") == "brak":
+        await message.answer("Опишите **недостатки товара** (что именно сломалось или работает не так?):")
+        await state.set_state(BotStates.step_problem)
+    elif data.get("current_agent") == "kačestvo":
+        await message.answer("Укажите причину, почему товар не подошел (например: не подошел по размеру и фасону):")
+        await state.set_state(BotStates.step_problem)
+    else:
+        # Для Роспотребнадзора сразу переходим к финальному шагу
+        user_answers["Суть проблемы"] = "Игнорирование досудебной претензии"
+        user_answers["Реквизиты"] = "Не требуются"
+        await state.update_data(user_answers=user_answers)
+        await generate_document_action(message, state)
 
 
 @dp.message(BotStates.step_problem)
@@ -164,60 +253,47 @@ async def process_problem(message: types.Message, state: FSMContext):
     user_answers = data.get("user_answers", {})
     user_answers["Суть проблемы"] = message.text
     await state.update_data(user_answers=user_answers)
-    await message.answer("Укажите ваш адрес (Город, улица, дом, квартира) для официального бланка:")
-    await state.set_state(BotStates.step_address)
+
+    await message.answer("Введите ваши **банковские реквизиты** для возврата денег (БИК, номер счета, банк):")
+    await state.set_state(BotStates.step_rekvizity)
 
 
-@dp.message(BotStates.step_address)
-async def process_address(message: types.Message, state: FSMContext):
+@dp.message(BotStates.step_rekvizity)
+async def process_rekvizity(message: types.Message, state: FSMContext):
     data = await state.get_data()
     user_answers = data.get("user_answers", {})
-    user_answers["Адрес заявителя"] = message.text
-    await state.update_data(user_answers=user_answers)
-    if data.get("current_agent") == "jkh":
-        await message.answer(
-            "📊 **Калькулятор температуры:** Сколько градусов сейчас у вас в комнате? Пришлите просто число:")
-        await state.set_state(BotStates.step_temp)
-    else:
-        await generate_document_action(message, state)
+    user_answers["Реквизиты"] = message.text
 
+    # Делаем инициалы для подписи автоматически из ФИО
+    fio_parts = user_answers.get("ФИО заявителя", "").split()
+    initials = user_answers.get("ФИО заявителя", "")
+    if len(fio_parts) >= 3:
+        initials = f"{fio_parts[0]} {fio_parts[1][0]}.{fio_parts[2][0]}."
+    user_answers["ФИО Инициалы"] = initials
 
-@dp.message(BotStates.step_temp)
-async def process_temp(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    user_answers = data.get("user_answers", {})
-    user_answers["Температура в комнате"] = f"{message.text} °C"
     await state.update_data(user_answers=user_answers)
     await generate_document_action(message, state)
 
 
 # ==========================================================
-# 🧠 ВЗАИМОДЕЙСТВИЕ С DEEPSEEK API
+# 🧠 ОТПРАВКА ДАННЫХ В DEEPSEEK
 # ==========================================================
 async def generate_document_action(message: types.Message, state: FSMContext):
-    status_msg = await message.answer("⏳ *ИИ-Юрист изучает законы и составляет документ, подождите...*",
+    status_msg = await message.answer("⏳ *ИИ-Юрист форматирует документ по шаблону, подождите...*",
                                       parse_mode="Markdown")
+
     data = await state.get_data()
     agent = data.get("current_agent")
     user_answers = data.get("user_answers", {})
-    system_prompt = SYSTEM_PROMPTS.get(agent, SYSTEM_PROMPTS["consumer_rights"])
+    system_prompt = SYSTEM_PROMPTS.get(agent)
 
-    user_prompt = "Сформируй досудебную претензию по законам РФ на основе анкеты:\n"
+    user_prompt = "Пожалуйста, заполни шаблон на основе этих данных:\n"
     for key, val in user_answers.items():
         user_prompt += f"- {key}: {val}\n"
-
-    if agent == "jkh" and "Temperature в комнате" in user_answers:
-        try:
-            temp_val = float(user_answers["Температура в комнате"].replace("°C", ""))
-            if temp_val < 18:
-                user_prompt += f"\n Доп. инструкция: температура {temp_val} °C ниже нормы. Рассчитай неустойку по ПП №354 (0.15% в час)."
-        except ValueError:
-            pass
 
     max_retries = 3
     result_text = None
 
-    # Попытки отправить запрос к ИИ через включенный VPN
     for attempt in range(max_retries):
         try:
             completion = await ai_client.chat.completions.create(
@@ -226,48 +302,39 @@ async def generate_document_action(message: types.Message, state: FSMContext):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.2
+                temperature=0.1  # Низкая температура, чтобы ИИ строго следовал тексту и не фантазировал
             )
             result_text = completion.choices[0].message.content
             break
         except Exception as e:
-            logging.error(f"Попытка {attempt + 1} провалилась: {str(e)}")
+            logging.error(f"Ошибка ИИ на попытке {attempt + 1}: {str(e)}")
             if attempt < max_retries - 1:
-                await asyncio.sleep(3)  # Ждем 3 секунды перед повтором
+                await asyncio.sleep(3)
                 continue
 
-    # Безопасное удаление статуса «Генерирую...» (не уронит бота, даже если сообщения нет)
     with contextlib.suppress(Exception):
         await status_msg.delete()
 
     if result_text:
-        # Добавляем подпись-дисклеймер к итоговому документу
         result_text += "\n\n---\n*⚖ Бот является ИИ-конструктором. Не заменяет очную консультацию.*"
+        await message.answer("🔥 **Ваш официальный документ готов! Скопируйте его:**")
 
-        # Отправляем красивый заголовок перед выдачей
-        await message.answer("🔥 **Ваш документ готов! Скопируйте его ниже:**")
-
-        # Нарезаем слишком большой текст на куски и отправляем по очереди
         text_parts = split_text(result_text)
         for part in text_parts:
             if part.strip():
                 await message.answer(part)
 
-        # Выводим кнопку главного меню
         builder = InlineKeyboardBuilder()
         builder.button(text="⬅ В главное меню", callback_data="go_to_menu")
-        await message.answer("Вы можете составить новый документ:", reply_markup=builder.as_markup())
+        await message.answer("Вы можете составить еще один документ:", reply_markup=builder.as_markup())
         await state.set_state(BotStates.main_menu)
     else:
-        # Если API упал совсем, то уводим в безопасный блок ошибки
         builder = InlineKeyboardBuilder()
-        builder.button(text="🔄 Попробовать еще раз", callback_data="retry_generation")
+        builder.button(text="🔄 Повторить генерацию", callback_data="retry_generation")
         builder.button(text="⬅ В главное меню", callback_data="go_to_menu")
         builder.adjust(1)
         await message.answer(
-            "⚠ **Сервер ИИ сейчас недоступен (ошибка соединения).**\n\n"
-            "Убедитесь, что ваш **VPN включен**. Ваши введенные данные полностью сохранены! "
-            "Пожалуйста, нажмите кнопку ниже, чтобы повторить генерацию.",
+            "⚠ **Ошибка связи с DeepSeek.**\n\nПроверьте настройки сети/VPN на сервере и нажмите кнопку повтора.",
             reply_markup=builder.as_markup()
         )
 
@@ -284,11 +351,8 @@ async def back_to_menu_callback(callback: types.CallbackQuery, state: FSMContext
     await show_main_menu(callback.message, state)
 
 
-# ==========================================================
-# 🏁 ЗАПУСК БОТА
-# ==========================================================
 async def main():
-    print("Бот успешно запущен и готов работать через DeepSeek!")
+    print("Бот успешно перезапущен на новые шаблоны!")
     await dp.start_polling(bot)
 
 
