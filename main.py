@@ -28,7 +28,7 @@ bot = Bot(token=BOT_TOKEN, session=bot_session)
 dp = Dispatcher(storage=MemoryStorage())
 
 # Инициализируем DeepSeek через официальный рабочий эндпоинт
-ai_client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://deepseek.com")
+ai_client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com/v1")
 
 # ==========================================================
 # 📑 ЭТАЛОННЫЕ ШАБЛОНЫ ДЛЯ DEEPSEEK (SYSTEM PROMPTS)
