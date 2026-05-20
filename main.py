@@ -395,7 +395,7 @@ async def generate_document_action(message: types.Message, state: FSMContext):
                 temperature=0.1,
                 timeout=30.0
             )
-            result_text = completion.choices.message.content
+            result_text = completion.choices[0].message.content
             break
         except Exception as e:
             logging.error(f"Ошибка ИИ на попытке {attempt + 1}: {str(e)}")
