@@ -379,7 +379,7 @@ async def generate_document_action(message: types.Message, state: FSMContext):
 
     user_prompt = "Пожалуйста, заполни шаблон на основе этих данных:\n"
     for key, val in user_answers.items():
-        user_prompt += f"- {key}: {val}\n"
+        user_prompt += f"- {key}: {str(val)}\n"
 
     max_retries = 3
     result_text = None
