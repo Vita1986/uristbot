@@ -387,7 +387,7 @@ async def generate_document_action(message: types.Message, state: FSMContext):
     for attempt in range(max_retries):
         try:
             completion = await ai_client.chat.completions.create(
-                model="deepseek-v4-flash",
+                model="deepseek-chat",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
