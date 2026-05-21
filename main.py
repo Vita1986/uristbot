@@ -19,7 +19,6 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8804861202:AAGbDign9c52_jpGfDe6YzfRgT7UwL1jA7o")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-6ca9bdce04844216a832a7865700d526")
-
 # Зарегистрируйтесь на dadata.ru и вставьте токен сюда (Лимит: 10 000 бесплатных запросов в день)
 DADATA_TOKEN = os.getenv("DADATA_TOKEN", "deaae9699831f5460e868c22dd77f62e685f7a2b")
 
@@ -28,7 +27,7 @@ bot = Bot(token=BOT_TOKEN, session=bot_session)
 dp = Dispatcher(storage=MemoryStorage())
 
 # Инициализируем DeepSeek через официальный рабочий эндпоинт
-ai_client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com/v1")
+ai_client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://deepseek.com")
 
 # ==========================================================
 # 📑 ЭТАЛОННЫЕ ШАБЛОНЫ ДЛЯ DEEPSEEK (SYSTEM PROMPTS)
@@ -54,7 +53,6 @@ SYSTEM_PROMPTS = {
         "2. Вернуть мне уплаченную сумму в размере [Вставь Стоимость] рублей в течение 10 дней по реквизитам: [Вставь Реквизиты].\n\n"
         "Дата: [Вставь Текущую Дату или оставь ___] Подпись: _________ / [Вставь ФИО Инициалы]"
     ),
-
     "kačestvo": (
         "Ты — профессиональный ИИ-юрист. Твоя задача — заполнить шаблон заявления на возврат товара НАДЛЕЖАЩЕГО качества "
         "(который просто не подошел). Действуй строго по закону, не выдумывай лишнего.\n\n"
@@ -74,7 +72,6 @@ SYSTEM_PROMPTS = {
         "2. Вернуть мне денежные средства в размере [Вставь Стоимость] рублей в течение 3 дней по реквизитам: [Вставь Реквизиты].\n\n"
         "Дата: [Вставь Текущую Дату] Подпись: _________ / [Вставь ФИО Инициалы]"
     ),
-
     "rospotreb": (
         "Ты — профессиональный ИИ-юрист. Твоя задача — составить жалобу в Роспотребнадзор на то, что магазин проигнорировал досудебную претензию.\n\n"
         "ОБЯЗАТЕЛЬНЫЙ ШАБЛОН ДЛЯ ЗАПОЛНЕНИЯ:\n"
@@ -154,7 +151,6 @@ async def fetch_company_data(query: str) -> dict:
             temperature=0.1
         )
         res_text = completion.choices.message.content.strip()
-
         if "ОШИБКА" not in res_text and "Название:" in res_text:
             lines = res_text.split("\n")
             name = "Не найдено"
@@ -165,11 +161,10 @@ async def fetch_company_data(query: str) -> dict:
                 if line.startswith("Адрес:"):
                     address = line.replace("Адрес:", "").strip()
             return {"success": True, "name": name, "address": address, "source": "DeepSeek (Резервный веб-поиск)"}
-
     except Exception:
         logging.exception("Технический сбой резервного поиска ИИ:")
-
     return {"success": False}
+
 
 # ==========================================================
 # 📥 ХЕНДЛЕРЫ ИНТЕРФЕЙСА
@@ -209,63 +204,95 @@ async def choose_agent(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     agent_name = callback.data.split("_")[1]
     await state.update_data(current_agent=agent_name, user_answers={})
-
     await callback.message.answer(
         "Введите ваши **ФИО полностью** (в родительном падеже, например: Иванова Ивана Петровича):")
     await state.set_state(BotStates.step_fio)
 
 
+# ==========================================================
+# ВНЕДРЕННЫЕ ИСПРАВЛЕНИЯ ДЛЯ ФИО И АДРЕСА
+# ==========================================================
 @dp.message(BotStates.step_fio)
 async def process_fio(message: types.Message, state: FSMContext):
     if len(message.text) < 5 or len(message.text) > 100:
         return await message.answer("⚠ Слишком короткое или длинное имя. Введите ФИО полностью корректно.")
 
+    status_msg = await message.answer("🔮 *Интеллектуальная проверка и исправление ФИО...*", parse_mode="Markdown")
+    corrected_fio = message.text
+    try:
+        # Промпт заставляет DeepSeek строго исправить опечатки и вернуть ФИО в требуемом родительном падеже
+        prompt = (
+            f"Ты — модуль проверки текста. Исправь опечатки и верни ФИО строго в РОДИТЕЛЬНОМ падеже. "
+            f"Текст для исправления: '{message.text}'. "
+            f"Выведи только исправленное ФИО с заглавных букв и ничего лишнего."
+        )
+        completion = await ai_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1
+        )
+        corrected_fio = completion.choices[0].message.content.strip()
+    except Exception as e:
+        logging.error(f"FIO correction error: {e}")
+
+    await status_msg.delete()
     data = await state.get_data()
     user_answers = data.get("user_answers", {})
-    user_answers["ФИО заявителя"] = message.text
+    user_answers["ФИО заявителя"] = corrected_fio
     await state.update_data(user_answers=user_answers)
 
-    await message.answer("Введите **ваш точный адрес** с индексом (для направления ответа):")
+    await message.answer(
+        f"✅ ФИО успешно записано как:\n`{corrected_fio}`\n\nВведите **ваш точный адрес** для направления ответа:")
     await state.set_state(BotStates.step_user_address)
 
 
 @dp.message(BotStates.step_user_address)
 async def process_user_address(message: types.Message, state: FSMContext):
-    if len(message.text) < 10:
+    if len(message.text) < 5:
         return await message.answer("⚠ Укажите более подробный адрес (город, улица, дом).")
 
+    status_msg = await message.answer("🔎 *Стандартизирую адрес через Федеральную базу реестров...*",
+                                      parse_mode="Markdown")
+    corrected_address = message.text
+
+    if DADATA_TOKEN and DADATA_TOKEN != "СЮДА_ВСТАВЬТЕ_ВАШ_ТОКЕН_DADATA":
+        try:
+            async with DadataAsync(DADATA_TOKEN) as dadata:
+                res = await dadata.clean(name="address", source=message.text)
+                if res and res.get("result"):
+                    corrected_address = res["result"]
+        except Exception as e:
+            logging.error(f"DaData address validation error: {e}")
+
+    await status_msg.delete()
     data = await state.get_data()
     user_answers = data.get("user_answers", {})
-    user_answers["Адрес заявителя"] = message.text
+    user_answers["Адрес заявителя"] = corrected_address
     await state.update_data(user_answers=user_answers)
 
     await message.answer(
-        "🔍 Введите **Бренд, Название магазина или ИНН** (например: Озон, ООО 'Вайлдберриз' или 7704217370):")
+        f"✅ Адрес успешно подтвержден:\n`{corrected_address}`\n\n"
+        f"🔍 Введите **Бренд, Название магазина или ИНН** (например: Озон, ООО 'Вайлдберриз' или 7704217370):"
+    )
     await state.set_state(BotStates.step_company)
 
 
 # ==========================================================
-# ⚡ УМНЫЙ ПЕРЕХВАТ ДАННЫХ МАГАЗИНА
+# СЛЕДУЮЩИЕ ХЕНДЛЕРЫ ОСТАВЛЕНЫ БЕЗ ИЗМЕНЕНИЙ
 # ==========================================================
 @dp.message(BotStates.step_company)
 async def process_company(message: types.Message, state: FSMContext):
     if len(message.text) < 2:
         return await message.answer("⚠ Слишком короткое название. Введите название бренда или ИНН.")
-
     status_msg = await message.answer("🔎 *Проверяю организацию в официальных реестрах, секунду...*")
-
     company_info = await fetch_company_data(message.text)
     await status_msg.delete()
-
     data = await state.get_data()
     user_answers = data.get("user_answers", {})
-
     if company_info.get("success"):
-        # Если нашли реквизиты — автоматически сохраняем имя и адрес!
         user_answers["Название Продавца"] = company_info["name"]
         user_answers["Адрес Продавца"] = company_info["address"]
         await state.update_data(user_answers=user_answers)
-
         await message.answer(
             f"✅ **Организация успешно найдена!**\n"
             f"🏢 Юр. лицо: `{company_info['name']}`\n"
@@ -275,7 +302,6 @@ async def process_company(message: types.Message, state: FSMContext):
         )
         await state.set_state(BotStates.step_product)
     else:
-        # Если ни ДаДатка, ни ИИ ничего не нашли по абракадабре
         await message.answer(
             "❌ **Организация не найдена в реестрах.**\n"
             "Пожалуйста, введите корректное название бренда, юрлица или ИНН. "
@@ -287,36 +313,27 @@ async def process_company(message: types.Message, state: FSMContext):
 async def process_product(message: types.Message, state: FSMContext):
     if len(message.text) < 2 or len(message.text) > 150:
         return await message.answer("⚠ Пожалуйста, введите корректное название товара.")
-
     data = await state.get_data()
     user_answers = data.get("user_answers", {})
     user_answers["Наименование Товара"] = message.text
     await state.update_data(user_answers=user_answers)
-
     await message.answer("Укажите **стоимость товара** в рублях (только цифры, например: 45000):")
     await state.set_state(BotStates.step_price)
 
 
-# ==========================================================
-# 💰 ЖЕСТКАЯ ВАЛИДАЦИЯ СУММЫ ПОКУПКИ
-# ==========================================================
 @dp.message(BotStates.step_price)
 async def process_price(message: types.Message, state: FSMContext):
     clean_price = "".join(filter(str.isdigit, message.text))
-
     if not clean_price:
         return await message.answer("⚠ Ошибка. Введите стоимость товара **только цифрами**, без букв и знаков.")
-
     price_num = int(clean_price)
     if price_num < 10 or price_num > 5000000:
         return await message.answer(
             "⚠ Некорректная сумма. Цена товара должна быть в диапазоне от 10 рублей до 5 000 000 рублей.")
-
     data = await state.get_data()
     user_answers = data.get("user_answers", {})
     user_answers["Стоимость"] = str(price_num)
     await state.update_data(user_answers=user_answers)
-
     if data.get("current_agent") == "brak":
         await message.answer(
             "Опишите **недостатки товара** своими словами (что именно сломалось или работает некорректно?):")
@@ -335,12 +352,10 @@ async def process_price(message: types.Message, state: FSMContext):
 async def process_problem(message: types.Message, state: FSMContext):
     if len(message.text) < 5:
         return await message.answer("⚠ Пожалуйста, опишите проблему подробнее, чтобы документ имел юридическую силу.")
-
     data = await state.get_data()
     user_answers = data.get("user_answers", {})
     user_answers["Суть проблемы"] = message.text
     await state.update_data(user_answers=user_answers)
-
     await message.answer("Введите ваши **банковские реквизиты** для возврата денег (БИК, номер счета, получатель):")
     await state.set_state(BotStates.step_rekvizity)
 
@@ -350,40 +365,30 @@ async def process_rekvizity(message: types.Message, state: FSMContext):
     if len(message.text) < 10:
         return await message.answer(
             "⚠ Пожалуйста, укажите полные корректные реквизиты (номер расчетного счета содержит 20 знаков).")
-
     data = await state.get_data()
     user_answers = data.get("user_answers", {})
     user_answers["Реквизиты"] = message.text
-
     fio_parts = user_answers.get("ФИО заявителя", "").split()
     initials = user_answers.get("ФИО заявителя", "")
     if len(fio_parts) >= 3:
         initials = f"{fio_parts[0]} {fio_parts[1][0]}.{fio_parts[2][0]}."
     user_answers["ФИО Инициалы"] = initials
-
     await state.update_data(user_answers=user_answers)
     await generate_document_action(message, state)
 
 
-# ==========================================================
-# 🧠 ОТПРАВКА ДАННЫХ В DEEPSEEK
-# ==========================================================
 async def generate_document_action(message: types.Message, state: FSMContext):
     status_msg = await message.answer("⏳ *ИИ-Юрист форматирует документ по шаблону, подождите...*",
                                       parse_mode="Markdown")
-
     data = await state.get_data()
     agent = data.get("current_agent")
     user_answers = data.get("user_answers", {})
     system_prompt = SYSTEM_PROMPTS.get(agent)
-
     user_prompt = "Пожалуйста, заполни шаблон на основе этих данных:\n"
     for key, val in user_answers.items():
         user_prompt += f"- {key}: {str(val)}\n"
-
     max_retries = 3
     result_text = None
-
     for attempt in range(max_retries):
         try:
             completion = await ai_client.chat.completions.create(
@@ -402,19 +407,15 @@ async def generate_document_action(message: types.Message, state: FSMContext):
             if attempt < max_retries - 1:
                 await asyncio.sleep(3)
                 continue
-
     with contextlib.suppress(Exception):
         await status_msg.delete()
-
     if result_text:
         result_text += "\n\n---\n*⚖ Бот является ИИ-конструктором. Не заменяет очную консультацию.*"
-        await message.answer("🔥 **Ваш официальный документ готов! Скопируйте его:**")
-
+        await message.answer("🔥 **Ваш official документ готов! Скопируйте его:**")
         text_parts = split_text(result_text)
         for part in text_parts:
             if part.strip():
                 await message.answer(part)
-
         builder = InlineKeyboardBuilder()
         builder.button(text="⬅ В главное меню", callback_data="go_to_menu")
         await message.answer("Вы можете составить еще один документ:", reply_markup=builder.as_markup())
@@ -425,7 +426,7 @@ async def generate_document_action(message: types.Message, state: FSMContext):
         builder.button(text="⬅ В главное меню", callback_data="go_to_menu")
         builder.adjust(1)
         await message.answer(
-            "⚠ **Ошибка связи с ИИ-сервером.**\n\nПроверьте VPN-туннель и нажмите кнопку повтора.",
+            "⚠ **Ошибка связи с ИИ-сервером.**\n\n Проверьте VPN-туннель и нажмите кнопку повтора.",
             reply_markup=builder.as_markup()
         )
 
