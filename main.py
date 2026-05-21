@@ -12,6 +12,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from openai import AsyncOpenAI
 from dadata import DadataAsync  # Импортируем асинхронный клиент Дадаты
+import pymorphy3  # Локальное точное склонение слов без ИИ и внешних запросов
 
 # Включаем логирование
 logging.basicConfig(level=logging.INFO)
@@ -19,7 +20,6 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8804861202:AAGbDign9c52_jpGfDe6YzfRgT7UwL1jA7o")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-6ca9bdce04844216a832a7865700d526")
-# Зарегистрируйтесь на dadata.ru и вставьте токен сюда (Лимит: 10 000 бесплатных запросов в день)
 DADATA_TOKEN = os.getenv("DADATA_TOKEN", "deaae9699831f5460e868c22dd77f62e685f7a2b")
 
 bot_session = AiohttpSession()
@@ -28,6 +28,30 @@ dp = Dispatcher(storage=MemoryStorage())
 
 # Инициализируем DeepSeek через официальный рабочий эндпоинт
 ai_client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://deepseek.com")
+
+# Инициализируем локальный морфологический анализатор
+morph = pymorphy3.MorphAnalyzer()
+
+
+def l_decline_to_gent(fio_text: str) -> str:
+    """Локальное склонение ФИО в родительный падеж (кого/чего) с помощью pymorphy3"""
+    try:
+        words = fio_text.split()
+        declined_words = []
+        for word in words:
+            parsed = morph.parse(word)[0]
+            # Склоняем слово в родительный падеж (gent)
+            declined = parsed.inflect({'gent'})
+            if declined:
+                # Сохраняем заглавную букву
+                declined_words.append(declined.word.capitalize())
+            else:
+                declined_words.append(word.capitalize())
+        return " ".join(declined_words)
+    except Exception as e:
+        logging.error(f"Pymorphy3 error: {e}")
+        return fio_text
+
 
 # ==========================================================
 # 📑 ЭТАЛОННЫЕ ШАБЛОНЫ ДЛЯ DEEPSEEK (SYSTEM PROMPTS)
@@ -44,7 +68,7 @@ SYSTEM_PROMPTS = {
         "ПРЕТЕНЗИЯ\n"
         "Я приобрел(а) в вашем магазине товар: [Вставь Наименование Товара], стоимостью [Вставь Стоимость] рублей. "
         "В процессе эксплуатации в товаре обнаружились следующие недостатки: [Юридически грамотно опиши суть проблемы на основе слов пользователя].\n"
-        "В соответствии со ст. 18 Закона РФ «О защите прав потребителей», потребитель в случае обнаружения в товаре недостатков "
+        "В соответствии со ст. 18 Закона РФ «О защите прав потребителей», потребитель в случае обнаружения in товаре недостатков "
         "вправе отказаться от исполнения договора купли-продажи и потребовать возврата уплаченной за товар суммы.\n"
         "Согласно ст. 22 Закона РФ «О защите прав потребителей», требования подлежат удовлетворению в течение 10 дней.\n"
         "На основании изложенного, руководствуясь ст. 15, 18, 22 Закона РФ «О защите прав потребителей»,\n"
@@ -119,8 +143,6 @@ def split_text(text: str, max_size: int = 4000) -> list[str]:
 # 🧠 ИНТЕЛЛЕКТУАЛЬНЫЙ ГИБРИДНЫЙ ПОИСК КОМПАНИИ (DaData + DeepSeek Fallback)
 # ==========================================================
 async def fetch_company_data(query: str) -> dict:
-    """Пытается найти компанию через DaData. Если DaData лежит — идет в обычный текстовый поиск DeepSeek."""
-    # 1. Попытка через DaData
     if DADATA_TOKEN and DADATA_TOKEN != "СЮДА_ВСТАВЬТЕ_ВАШ_ТОКЕН_DADATA":
         try:
             async with DadataAsync(DADATA_TOKEN) as dadata:
@@ -134,7 +156,6 @@ async def fetch_company_data(query: str) -> dict:
         except Exception:
             logging.exception("Технический сбой DaData:")
 
-    # 2. Попытка через DeepSeek (Если DaData выключена или выдала ошибку)
     try:
         logging.info("Переключаюсь на поиск через DeepSeek...")
         search_prompt = (
@@ -205,56 +226,58 @@ async def choose_agent(callback: types.CallbackQuery, state: FSMContext):
     agent_name = callback.data.split("_")[1]
     await state.update_data(current_agent=agent_name, user_answers={})
     await callback.message.answer(
-        "Введите ваши **ФИО полностью** (в родительном падеже, например: Иванова Ивана Петровича):")
+        "Введите ваши **ФИО полностью** (например: Иванов Иван Иванович):")
     await state.set_state(BotStates.step_fio)
 
 
 # ==========================================================
-# ВНЕДРЕННЫЕ ИСПРАВЛЕНИЯ ДЛЯ ФИО И АДРЕСА
+# 💎 ПРИСТАЛЬНОЕ ВНИМАНИЕ: СВЕРХНАДЕЖНАЯ ВАЛИДАЦИЯ ФИО И АДРЕСА
 # ==========================================================
 @dp.message(BotStates.step_fio)
 async def process_fio(message: types.Message, state: FSMContext):
-    if len(message.text) < 5 or len(message.text) > 100:
-        return await message.answer("⚠ Слишком короткое или длинное имя. Введите ФИО полностью корректно.")
+    if len(message.text) < 3 or len(message.text) > 120:
+        return await message.answer("⚠ Введите корректное полное ФИО.")
 
-    status_msg = await message.answer("🔮 *Интеллектуальная проверка и исправление ФИО...*", parse_mode="Markdown")
-    corrected_fio = message.text
-    try:
-        # Промпт заставляет DeepSeek строго исправить опечатки и вернуть ФИО в требуемом родительном падеже
-        prompt = (
-            f"Ты — модуль проверки текста. Исправь опечатки и верни ФИО строго в РОДИТЕЛЬНОМ падеже. "
-            f"Текст для исправления: '{message.text}'. "
-            f"Выведи только исправленное ФИО с заглавных букв и ничего лишнего."
-        )
-        completion = await ai_client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1
-        )
-        corrected_fio = completion.choices[0].message.content.strip()
-    except Exception as e:
-        logging.error(f"FIO correction error: {e}")
+    status_msg = await message.answer("🔮 *Проверяю и исправляю ФИО...*", parse_mode="Markdown")
+
+    # Исходное значение по умолчанию
+    cleaned_nominative_fio = message.text
+
+    # 1. Исправляем опечатки через DaData (чистит "иванив еван" -> "Иванов Иван")
+    if DADATA_TOKEN and DADATA_TOKEN != "СЮДА_ВСТАВЬТЕ_ВАШ_ТОКЕН_DADATA":
+        try:
+            async with DadataAsync(DADATA_TOKEN) as dadata:
+                res = await dadata.clean(name="name", source=message.text)
+                if res and res.get("result"):
+                    cleaned_nominative_fio = res["result"]
+        except Exception as e:
+            logging.error(f"DaData FIO clean error: {e}")
+
+    # 2. Локально переводим ФИО в требуемый РОДИТЕЛЬНЫЙ ПАДЕЖ без сетевых запросов
+    corrected_gent_fio = l_decline_to_gent(cleaned_nominative_fio)
 
     await status_msg.delete()
     data = await state.get_data()
     user_answers = data.get("user_answers", {})
-    user_answers["ФИО заявителя"] = corrected_fio
+    user_answers["ФИО заявителя"] = corrected_gent_fio
     await state.update_data(user_answers=user_answers)
 
     await message.answer(
-        f"✅ ФИО успешно записано как:\n`{corrected_fio}`\n\nВведите **ваш точный адрес** для направления ответа:")
+        f"✅ ФИО распознано и просклонено:\n`{corrected_gent_fio}`\n\n"
+        f"Введите **ваш адрес** (например: екат михеева 2 55):"
+    )
     await state.set_state(BotStates.step_user_address)
 
 
 @dp.message(BotStates.step_user_address)
 async def process_user_address(message: types.Message, state: FSMContext):
-    if len(message.text) < 5:
-        return await message.answer("⚠ Укажите более подробный адрес (город, улица, дом).")
+    if len(message.text) < 4:
+        return await message.answer("⚠ Укажите более подробный адрес.")
 
-    status_msg = await message.answer("🔎 *Стандартизирую адрес через Федеральную базу реестров...*",
-                                      parse_mode="Markdown")
+    status_msg = await message.answer("🔎 *Стандартизирую адрес по базам ФНС...*", parse_mode="Markdown")
     corrected_address = message.text
 
+    # Стандартизация адреса через DaData (добавит индекс, исправит опечатки в улицах и городах)
     if DADATA_TOKEN and DADATA_TOKEN != "СЮДА_ВСТАВЬТЕ_ВАШ_ТОКЕН_DADATA":
         try:
             async with DadataAsync(DADATA_TOKEN) as dadata:
@@ -272,13 +295,13 @@ async def process_user_address(message: types.Message, state: FSMContext):
 
     await message.answer(
         f"✅ Адрес успешно подтвержден:\n`{corrected_address}`\n\n"
-        f"🔍 Введите **Бренд, Название магазина или ИНН** (например: Озон, ООО 'Вайлдберриз' или 7704217370):"
+        f"🔍 Введите **Бренд, Название магазина или ИНН** (например: Озон или 7704217370):"
     )
     await state.set_state(BotStates.step_company)
 
 
 # ==========================================================
-# СЛЕДУЮЩИЕ ХЕНДЛЕРЫ ОСТАВЛЕНЫ БЕЗ ИЗМЕНЕНИЙ
+# ОСТАЛЬНАЯ ЛОГИКА ОСТАВЛЕНА БЕЗ ИЗМЕНЕНИЙ
 # ==========================================================
 @dp.message(BotStates.step_company)
 async def process_company(message: types.Message, state: FSMContext):
@@ -304,8 +327,7 @@ async def process_company(message: types.Message, state: FSMContext):
     else:
         await message.answer(
             "❌ **Организация не найдена в реестрах.**\n"
-            "Пожалуйста, введите корректное название бренда, юрлица или ИНН. "
-            "Не вводите случайный набор букв."
+            "Пожалуйста, введите корректное название бренда, юрлица или ИНН."
         )
 
 
@@ -325,21 +347,19 @@ async def process_product(message: types.Message, state: FSMContext):
 async def process_price(message: types.Message, state: FSMContext):
     clean_price = "".join(filter(str.isdigit, message.text))
     if not clean_price:
-        return await message.answer("⚠ Ошибка. Введите стоимость товара **только цифрами**, без букв и знаков.")
+        return await message.answer("⚠ Введите стоимость товара **только цифрами**.")
     price_num = int(clean_price)
     if price_num < 10 or price_num > 5000000:
-        return await message.answer(
-            "⚠ Некорректная сумма. Цена товара должна быть в диапазоне от 10 рублей до 5 000 000 рублей.")
+        return await message.answer("⚠ Цена товара должна быть в диапазоне от 10 до 5 000 000 рублей.")
     data = await state.get_data()
     user_answers = data.get("user_answers", {})
     user_answers["Стоимость"] = str(price_num)
     await state.update_data(user_answers=user_answers)
     if data.get("current_agent") == "brak":
-        await message.answer(
-            "Опишите **недостатки товара** своими словами (что именно сломалось или работает некорректно?):")
+        await message.answer("Опишите **недостатки товара** своими словами:")
         await state.set_state(BotStates.step_problem)
     elif data.get("current_agent") == "kačestvo":
-        await message.answer("Укажите причину, почему товар не подошел (например: не подошел размер обуви):")
+        await message.answer("Укажите причину, почему товар не подошел:")
         await state.set_state(BotStates.step_problem)
     else:
         user_answers["Суть проблемы"] = "Игнорирование досудебной претензии"
@@ -351,20 +371,19 @@ async def process_price(message: types.Message, state: FSMContext):
 @dp.message(BotStates.step_problem)
 async def process_problem(message: types.Message, state: FSMContext):
     if len(message.text) < 5:
-        return await message.answer("⚠ Пожалуйста, опишите проблему подробнее, чтобы документ имел юридическую силу.")
+        return await message.answer("⚠ Пожалуйста, опишите проблему подробнее.")
     data = await state.get_data()
     user_answers = data.get("user_answers", {})
     user_answers["Суть проблемы"] = message.text
     await state.update_data(user_answers=user_answers)
-    await message.answer("Введите ваши **банковские реквизиты** для возврата денег (БИК, номер счета, получатель):")
+    await message.answer("Введите ваши **банковские реквизиты** для возврата денег:")
     await state.set_state(BotStates.step_rekvizity)
 
 
 @dp.message(BotStates.step_rekvizity)
 async def process_rekvizity(message: types.Message, state: FSMContext):
     if len(message.text) < 10:
-        return await message.answer(
-            "⚠ Пожалуйста, укажите полные корректные реквизиты (номер расчетного счета содержит 20 знаков).")
+        return await message.answer("⚠ Пожалуйста, укажите полные корректные реквизиты.")
     data = await state.get_data()
     user_answers = data.get("user_answers", {})
     user_answers["Реквизиты"] = message.text
@@ -411,7 +430,7 @@ async def generate_document_action(message: types.Message, state: FSMContext):
         await status_msg.delete()
     if result_text:
         result_text += "\n\n---\n*⚖ Бот является ИИ-конструктором. Не заменяет очную консультацию.*"
-        await message.answer("🔥 **Ваш official документ готов! Скопируйте его:**")
+        await message.answer("🔥 **Ваш официальный документ готов! Скопируйте его:**")
         text_parts = split_text(result_text)
         for part in text_parts:
             if part.strip():
@@ -426,7 +445,7 @@ async def generate_document_action(message: types.Message, state: FSMContext):
         builder.button(text="⬅ В главное меню", callback_data="go_to_menu")
         builder.adjust(1)
         await message.answer(
-            "⚠ **Ошибка связи с ИИ-сервером.**\n\n Проверьте VPN-туннель и нажмите кнопку повтора.",
+            "⚠ **Ошибка связи с ИИ-сервером.**\n\n Нажмите кнопку повтора.",
             reply_markup=builder.as_markup()
         )
 
@@ -444,7 +463,7 @@ async def back_to_menu_callback(callback: types.CallbackQuery, state: FSMContext
 
 
 async def main():
-    print("Бот успешно перезапущен с гибридной валидацией DaData + ИИ!")
+    print("Бот успешно перезапущен с гибридной валидацией DaData + Локальное склонение!")
     await dp.start_polling(bot)
 
 
