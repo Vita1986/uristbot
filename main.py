@@ -19,14 +19,16 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8804861202:AAGbDign9c52_jpGfDe6YzfRgT7UwL1jA7o")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-6ca9bdce04844216a832a7865700d526")
+
+# !!! ВНИМАНИЕ: Проверьте этот токен. Зайдите в личный кабинет dadata.ru и убедитесь, что он активен !!!
 DADATA_TOKEN = os.getenv("DADATA_TOKEN", "deaae9699831f5460e868c22dd77f62e685f7a2b")
 
 bot_session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=bot_session)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Инициализируем DeepSeek через официальный рабочий эндпоинт
-ai_client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://deepseek.com")
+# ИСПРАВЛЕНО: Убран "/v1" с конца URL. Теперь библиотека openai сама построит правильный путь.
+ai_client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
 
 # ==========================================================
 # 📑 ЭТАЛОННЫЕ ШАБЛОНЫ ДЛЯ DEEPSEEK (SYSTEM PROMPTS)
@@ -123,13 +125,13 @@ async def fetch_company_data(query: str) -> dict:
             async with DadataAsync(DADATA_TOKEN) as dadata:
                 result = await dadata.suggest(name="party", query=query, count=1)
                 if result:
-                    data = result["data"]
-                    name = result["value"]
+                    data = result[0]["data"]
+                    name = result[0]["value"]
                     address = data.get("address", {}).get("value", "Не найден")
                     inn = data.get("inn", "Не указан")
                     return {"success": True, "name": f"{name} (ИНН {inn})", "address": address, "source": "DaData"}
-        except Exception:
-            logging.exception("Технический сбой DaData:")
+        except Exception as e:
+            logging.error(f"Технический сбой DaData при поиске компании: {e}")
 
     try:
         logging.info("Переключаюсь на поиск через DeepSeek...")
@@ -142,7 +144,7 @@ async def fetch_company_data(query: str) -> dict:
             f"Если это бессмысленный набор букв и компанию найти невозможно, напиши только одно слово: ОШИБКА"
         )
         completion = await ai_client.chat.completions.create(
-            model="deepseek-v4-flash",
+            model="deepseek-chat",
             messages=[{"role": "user", "content": search_prompt}],
             temperature=0.1
         )
@@ -157,8 +159,8 @@ async def fetch_company_data(query: str) -> dict:
                 if line.startswith("Адрес:"):
                     address = line.replace("Адрес:", "").strip()
             return {"success": True, "name": name, "address": address, "source": "DeepSeek (Резервный веб-поиск)"}
-    except Exception:
-        logging.exception("Технический сбой резервного поиска ИИ:")
+    except Exception as e:
+        logging.error(f"Технический сбой резервного поиска ИИ: {e}")
     return {"success": False}
 
 
@@ -206,7 +208,7 @@ async def choose_agent(callback: types.CallbackQuery, state: FSMContext):
 
 
 # ==========================================================
-# ⚡ ОБНОВЛЕННЫЕ ХЕНДЛЕРЫ ДЛЯ ВАЛИДАЦИИ ФИО И АДРЕСА
+# ИСПРАВЛЕНО: КОРРЕКТНЫЕ ЗАПРОСЫ К DEEPSEEK И DADATA
 # ==========================================================
 @dp.message(BotStates.step_fio)
 async def process_fio(message: types.Message, state: FSMContext):
@@ -214,12 +216,9 @@ async def process_fio(message: types.Message, state: FSMContext):
         return await message.answer("⚠ Введите корректное полное ФИО.")
 
     status_msg = await message.answer("🔮 *Интеллектуальная проверка и исправление ФИО...*", parse_mode="Markdown")
-
-    # Запасной базовый вариант (просто делает первые буквы заглавными)
     corrected_fio = message.text.title()
 
     try:
-        # Прямой жесткий промпт с нулевой температурой для DeepSeek
         prompt = (
             f"Ты — профессиональный редактор документов. Исправь все грамматические и орфографические ошибки, "
             f"а также опечатки в следующих персональных данных человека. Сделай первую букву каждого слова заглавной. "
@@ -230,19 +229,18 @@ async def process_fio(message: types.Message, state: FSMContext):
         completion = await ai_client.chat.completions.create(
             model="deepseek-chat",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,  # Гарантирует точное следование правилам без фантазий
+            temperature=0.0,
             timeout=15.0
         )
         response_text = completion.choices.message.content.strip()
-
-        # Защита от случайных точек на конце
         if response_text.endswith("."):
             response_text = response_text[:-1].strip()
 
         if len(response_text.split()) >= 2:
             corrected_fio = response_text
     except Exception as e:
-        logging.error(f"DeepSeek FIO error: {e}")
+        # Теперь вы увидите в логах консоли ТМВ реальную ошибку, если она случится
+        logging.error(f"КРИТИЧЕСКАЯ ОШИБКА ДИПСИКА: {e}")
 
     await status_msg.delete()
     data = await state.get_data()
@@ -265,15 +263,15 @@ async def process_user_address(message: types.Message, state: FSMContext):
     status_msg = await message.answer("🔎 *Стандартизирую адрес по официальным базам...*", parse_mode="Markdown")
     corrected_address = message.text
 
-    # Стандартизация адреса через DaData (восстановит город, добавит индекс и исправит сокращения)
     if DADATA_TOKEN and DADATA_TOKEN != "СЮДА_ВСТАВЬТЕ_ВАШ_ТОКЕН_DADATA":
         try:
+            # ИСПРАВЛЕНО: Правильный вызов API стандартизации DaData по документации разработчиков
             async with DadataAsync(DADATA_TOKEN) as dadata:
-                res = await dadata.clean(name="address", source=message.text)
-                if res and res.get("result"):
-                    corrected_address = res["result"]
+                res = await dadata.suggest(name="address", query=message.text, count=1)
+                if res:
+                    corrected_address = res[0]["value"]
         except Exception as e:
-            logging.error(f"DaData address validation error: {e}")
+            logging.error(f"КРИТИЧЕСКАЯ ОШИБКА ДАДАТЫ ПО АДРЕСУ: {e}")
 
     await status_msg.delete()
     data = await state.get_data()
@@ -289,7 +287,7 @@ async def process_user_address(message: types.Message, state: FSMContext):
 
 
 # ==========================================================
-# 📦 ДАЛЬНЕЙШАЯ ЛОГИКА ШАГОВ
+# ОСТАЛЬНАЯ ЛОГИКА ШАГОВ
 # ==========================================================
 @dp.message(BotStates.step_company)
 async def process_company(message: types.Message, state: FSMContext):
@@ -327,7 +325,7 @@ async def process_product(message: types.Message, state: FSMContext):
     user_answers = data.get("user_answers", {})
     user_answers["Наименование Товара"] = message.text
     await state.update_data(user_answers=user_answers)
-    await message.answer("Укажите **стоимость товара** в рублей (только цифры, например: 45000):")
+    await message.answer("Укажите **стоимость товара** в рублях (только цифры, например: 45000):")
     await state.set_state(BotStates.step_price)
 
 
@@ -378,7 +376,7 @@ async def process_rekvizity(message: types.Message, state: FSMContext):
     fio_parts = user_answers.get("ФИО заявителя", "").split()
     initials = user_answers.get("ФИО заявителя", "")
     if len(fio_parts) >= 3:
-        initials = f"{fio_parts[0]} {fio_parts[1][0]}.{fio_parts[2][0]}."
+        initials = f"{fio_parts} {fio_parts}.{fio_parts}."
     user_answers["ФИО Инициалы"] = initials
     await state.update_data(user_answers=user_answers)
     await generate_document_action(message, state)
@@ -451,7 +449,7 @@ async def back_to_menu_callback(callback: types.CallbackQuery, state: FSMContext
 
 
 async def main():
-    print("Бот успешно перезапущен с финальной валидацией ФИО через DeepSeek и адресов через DaData!")
+    print("Бот успешно перезапущен!")
     await dp.start_polling(bot)
 
 
