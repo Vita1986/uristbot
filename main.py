@@ -43,7 +43,7 @@ SYSTEM_PROMPTS = {
         "ПРЕТЕНЗИЯ\n"
         "Я приобрел(а) в вашем магазине товар: [Вставь Наименование Товара], стоимостью [Вставь Стоимость] рублей. "
         "В процессе эксплуатации в товаре обнаружились следующие недостатки: [Юридически грамотно опиши суть проблемы на основе слов пользователя].\n"
-        "В соответствии со ст. 18 Закона РФ «О защите прав потребителей», потребитель в случае обнаружения in товаре недостатков "
+        "В соответствии со ст. 18 Закона РФ «О защите прав потребителей», потребитель в случае обнаружения в товаре недостатков "
         "вправе отказаться от исполнения договора купли-продажи и потребовать возврата уплаченной за товар суммы.\n"
         "Согласно ст. 22 Закона РФ «О защите прав потребителей», требования подлежат удовлетворению в течение 10 дней.\n"
         "На основании изложенного, руководствуясь ст. 15, 18, 22 Закона РФ «О защите прав потребителей»,\n"
@@ -123,8 +123,8 @@ async def fetch_company_data(query: str) -> dict:
             async with DadataAsync(DADATA_TOKEN) as dadata:
                 result = await dadata.suggest(name="party", query=query, count=1)
                 if result:
-                    data = result[0]["data"]
-                    name = result[0]["value"]
+                    data = result["data"]
+                    name = result["value"]
                     address = data.get("address", {}).get("value", "Не найден")
                     inn = data.get("inn", "Не указан")
                     return {"success": True, "name": f"{name} (ИНН {inn})", "address": address, "source": "DaData"}
@@ -198,7 +198,7 @@ async def show_main_menu(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("agent_"), BotStates.main_menu)
 async def choose_agent(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
-    agent_name = callback.data.split("_")[1]
+    agent_name = callback.data.split("_")
     await state.update_data(current_agent=agent_name, user_answers={})
     await callback.message.answer(
         "Введите ваши **ФИО полностью** (например: Иванов Иван Иванович):")
@@ -206,7 +206,7 @@ async def choose_agent(callback: types.CallbackQuery, state: FSMContext):
 
 
 # ==========================================================
-# 🔥 ИСПРАВЛЕННЫЙ ИГРИДНЫЙ БЛОК: ВАЛИДАЦИЯ ФИО И АДРЕСА
+# ⚡ ОБНОВЛЕННЫЕ ХЕНДЛЕРЫ ДЛЯ ВАЛИДАЦИИ ФИО И АДРЕСА
 # ==========================================================
 @dp.message(BotStates.step_fio)
 async def process_fio(message: types.Message, state: FSMContext):
@@ -215,24 +215,30 @@ async def process_fio(message: types.Message, state: FSMContext):
 
     status_msg = await message.answer("🔮 *Интеллектуальная проверка и исправление ФИО...*", parse_mode="Markdown")
 
-    # Резервный вариант, если ИИ недоступен (просто делает первые буквы заглавными)
+    # Запасной базовый вариант (просто делает первые буквы заглавными)
     corrected_fio = message.text.title()
 
-    # Исправляем любые опечатки и оставляем строго в Именительном падеже
     try:
+        # Прямой жесткий промпт с нулевой температурой для DeepSeek
         prompt = (
-            f"Ты — модуль исправления опечаток в именах. Твоя задача исправить опечатки, "
-            f"сделать первую букву каждого слова заглавной и вернуть результат строго в ИМЕНИТЕЛЬНОМ падеже (Кто/Что).\n"
-            f"Текст для исправления: '{message.text}'.\n"
-            f"Выведи только исправленное ФИО (Фамилия Имя Отчество) и больше вообще ничего не пиши."
+            f"Ты — профессиональный редактор документов. Исправь все грамматические и орфографические ошибки, "
+            f"а также опечатки в следующих персональных данных человека. Сделай первую букву каждого слова заглавной. "
+            f"Результат верни СТРОГО в ИМЕНИТЕЛЬНОМ падеже (Фамилия Имя Отчество).\n\n"
+            f"Искаженный текст пользователя: '{message.text}'\n\n"
+            f"Выведи исключительно готовое корректное ФИО и абсолютно больше ничего не пиши. Никаких лишних знаков и пояснений."
         )
         completion = await ai_client.chat.completions.create(
             model="deepseek-chat",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
+            temperature=0.0,  # Гарантирует точное следование правилам без фантазий
             timeout=15.0
         )
         response_text = completion.choices.message.content.strip()
+
+        # Защита от случайных точек на конце
+        if response_text.endswith("."):
+            response_text = response_text[:-1].strip()
+
         if len(response_text.split()) >= 2:
             corrected_fio = response_text
     except Exception as e:
@@ -259,7 +265,7 @@ async def process_user_address(message: types.Message, state: FSMContext):
     status_msg = await message.answer("🔎 *Стандартизирую адрес по официальным базам...*", parse_mode="Markdown")
     corrected_address = message.text
 
-    # Стандартизация адреса через DaData (добавит индекс, исправит опечатки в улицах и городах)
+    # Стандартизация адреса через DaData (восстановит город, добавит индекс и исправит сокращения)
     if DADATA_TOKEN and DADATA_TOKEN != "СЮДА_ВСТАВЬТЕ_ВАШ_ТОКЕН_DADATA":
         try:
             async with DadataAsync(DADATA_TOKEN) as dadata:
@@ -283,13 +289,13 @@ async def process_user_address(message: types.Message, state: FSMContext):
 
 
 # ==========================================================
-# ОСТАЛЬНАЯ ЛОГИКА ОСТАВЛЕНА БЕЗ ИЗМЕНЕНИЙ
+# 📦 ДАЛЬНЕЙШАЯ ЛОГИКА ШАГОВ
 # ==========================================================
 @dp.message(BotStates.step_company)
 async def process_company(message: types.Message, state: FSMContext):
     if len(message.text) < 2:
         return await message.answer("⚠ Слишком короткое название. Введите название бренда или ИНН.")
-    status_msg = await message.answer("🔎 *Проверяю организацию in официальных реестрах, секунду...*")
+    status_msg = await message.answer("🔎 *Проверяю организацию в официальных реестрах, секунду...*")
     company_info = await fetch_company_data(message.text)
     await status_msg.delete()
     data = await state.get_data()
@@ -321,7 +327,7 @@ async def process_product(message: types.Message, state: FSMContext):
     user_answers = data.get("user_answers", {})
     user_answers["Наименование Товара"] = message.text
     await state.update_data(user_answers=user_answers)
-    await message.answer("Укажите **стоимость товара** в рублях (только цифры, например: 45000):")
+    await message.answer("Укажите **стоимость товара** в рублей (только цифры, например: 45000):")
     await state.set_state(BotStates.step_price)
 
 
@@ -445,7 +451,7 @@ async def back_to_menu_callback(callback: types.CallbackQuery, state: FSMContext
 
 
 async def main():
-    print("Бот успешно перезапущен с финальной валидацией ФИО и Адресов!")
+    print("Бот успешно перезапущен с финальной валидацией ФИО через DeepSeek и адресов через DaData!")
     await dp.start_polling(bot)
 
 
