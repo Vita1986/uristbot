@@ -222,16 +222,20 @@ async def process_fio(message: types.Message, state: FSMContext):
     if len(message.text) < 3 or len(message.text) > 120:
         return await message.answer("⚠ Введите корректное полное ФИО.")
 
-    status_msg = await message.answer("🔮 *Интеллектуальная проверка и исправление ФИО...*", parse_mode="Markdown")
+    status_msg = await message.answer("🔮 *Проверяю ФИО...*", parse_mode="Markdown")
     corrected_fio = message.text.title()
 
     try:
         prompt = (
-            f"Ты — профессиональный редактор документов. Исправь все грамматические и орфографические ошибки, "
-            f"а также опечатки в следующих персональных данных человека. Сделай первую букву каждого слова заглавной. "
-            f"Результат верни СТРОГО в ИМЕНИТЕЛЬНОМ падеже (Фамилия Имя Отчество).\n\n"
-            f"Искаженный текст пользователя: '{message.text}'\n\n"
-            f"Выведи исключительно готовое корректное ФИО и абсолютно больше ничего не пиши. Никаких лишних знаков и пояснений."
+            f"Ты — профессиональный редактор документов. Проверь является ли текст ниже настоящим русским ФИО человека.\n\n"
+            f"Текст: '{message.text}'\n\n"
+            f"Правила:\n"
+            f"1. Если это бессмысленный набор букв, случайные символы, или явно не ФИО — ответь ТОЛЬКО одним словом: НЕДЕЙСТВИТЕЛЬНО\n"
+            f"2. Если это реальное ФИО (даже с опечатками, ошибками или в неправильном регистре) — исправь ВСЕ орфографические ошибки "
+            f"до правильного русского написания (например: 'Еван' → 'Иван', 'Иванавич' → 'Иванович', 'алексей' → 'Алексей'), "
+            f"сделай первую букву каждого слова заглавной, остальные строчными, "
+            f"верни ТОЛЬКО исправленное ФИО в именительном падеже (Фамилия Имя Отчество).\n"
+            f"Никаких пояснений, скобок, вариантов — только одно готовое ФИО."
         )
         completion = await ai_client.chat.completions.create(
             model="deepseek-chat",
@@ -239,8 +243,15 @@ async def process_fio(message: types.Message, state: FSMContext):
             temperature=0.0,
             timeout=15.0
         )
-        # ✅ ИСПРАВЛЕНО: choices[0] вместо choices
         response_text = completion.choices[0].message.content.strip()
+
+        if "НЕДЕЙСТВИТЕЛЬНО" in response_text.upper():
+            await status_msg.delete()
+            return await message.answer(
+                "⚠ Введённое ФИО не похоже на настоящее.\n"
+                "Пожалуйста, введите реальные Фамилию, Имя и Отчество."
+            )
+
         if response_text.endswith("."):
             response_text = response_text[:-1].strip()
         if len(response_text.split()) >= 2:
